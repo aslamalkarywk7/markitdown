@@ -45,32 +45,68 @@ _LOCALE_BLOCK_RE = re.compile(r'\[\$([^\]-]+)')
 _QUOTED_LITERAL_RE = re.compile(r'"([^"]*)"')
 
 
-def _currency_symbol(number_format: Any) -> Optional[str]:
-  """Return the currency symbol of an Excel number format, if it has one.
+def _select_format_section(number_format: str, value: Any) -> str:
+    """Pick the `;`-separated Excel section that applies to `value`.
 
-  Only the first (`;`-separated) section is considered, matching how
-  positive values are rendered.
-  """
-  if not isinstance(number_format, str):
-    return None
-  first_section = number_format.split(';')[0]
-  quoted = ''.join(_QUOTED_LITERAL_RE.findall(first_section))
-  locale = ''.join(_LOCALE_BLOCK_RE.findall(first_section))
-  candidates = quoted + locale
-  if not candidates:
-    candidates = first_section
-  match = _CURRENCY_SYMBOL_RE.search(candidates)
-  return match.group(0) if match else None
+    Excel uses: 1 section = all numbers, 2 sections = positive+zero / negative,
+    3 sections = positive / negative / zero (4th section is text and ignored).
+    """
+    parts = number_format.split(";")
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        # Zero renders with the first section when only two are present.
+        try:
+            is_negative = float(value) < 0
+        except Exception:
+            is_negative = False
+        return parts[1] if is_negative else parts[0]
+    try:
+        numeric = float(value)
+    except Exception:
+        return parts[0]
+    if numeric > 0:
+        return parts[0]
+    if numeric < 0:
+        return parts[1]
+    return parts[2]
 
 
-def _is_currency_position_prefix(number_format: str) -> bool:
-  """Decide whether the currency symbol renders before the value."""
-  first_section = number_format.split(';')[0]
-  symbol_match = _CURRENCY_SYMBOL_RE.search(first_section)
-  placeholder_match = re.search(r'[#0?]', first_section)
-  if not symbol_match or not placeholder_match:
-    return True
-  return symbol_match.start() < placeholder_match.start()
+def _currency_symbol(number_format: Any, value: Any = None) -> Optional[str]:
+    """Return the currency symbol of an Excel number format, if it has one.
+
+    When `value` is given, the `;`-separated section matching its sign is
+    inspected (positive / negative / zero). Otherwise the first section is
+    used, matching how positive values are rendered.
+    """
+    if not isinstance(number_format, str):
+        return None
+    section = (
+        _select_format_section(number_format, value)
+        if value is not None
+        else number_format.split(";")[0]
+    )
+    quoted = "".join(_QUOTED_LITERAL_RE.findall(section))
+    locale = "".join(_LOCALE_BLOCK_RE.findall(section))
+    candidates = quoted + locale
+    if not candidates:
+        candidates = section
+    match = _CURRENCY_SYMBOL_RE.search(candidates)
+    return match.group(0) if match else None
+
+
+def _is_currency_position_prefix(number_format: str, value: Any = None) -> bool:
+    """Decide whether the currency symbol renders before the value."""
+    section = (
+        _select_format_section(number_format, value)
+        if value is not None
+        else number_format.split(";")[0]
+    )
+    symbol_match = _CURRENCY_SYMBOL_RE.search(section)
+    placeholder_match = re.search(r"[#0?]", section)
+    if not symbol_match or not placeholder_match:
+        return True
+    return symbol_match.start() < placeholder_match.start()
 
 
 def _overlay_currency_labels(
@@ -110,7 +146,7 @@ def _overlay_currency_labels(
               or not isinstance(value, (int, float))
           ):
             continue
-          symbol = _currency_symbol(cell.number_format)
+          symbol = _currency_symbol(cell.number_format, value)
           if symbol is None:
             continue
           data_row = cell.row - 2
@@ -128,7 +164,7 @@ def _overlay_currency_labels(
                 frame.columns[data_col]
             ].astype(object)
             object_cols.add(data_col)
-          if _is_currency_position_prefix(str(cell.number_format)):
+          if _is_currency_position_prefix(str(cell.number_format), value):
             text = f'{symbol}{text}'
           else:
             text = f'{text}{symbol}'

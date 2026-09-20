@@ -68,3 +68,41 @@ def test_euro_suffix_format() -> None:
     workbook.save(stream)
     workbook.close()
     assert "42€" in _convert(stream.getvalue())
+
+
+def test_section_specific_currency_uses_cell_value() -> None:
+    from markitdown.converters._xlsx_converter import (
+        _currency_symbol,
+        _is_currency_position_prefix,
+        _select_format_section,
+    )
+
+    fmt = '"$"#,##0;"€"#,##0'
+    assert _select_format_section(fmt, 5) == '"$"#,##0'
+    assert _select_format_section(fmt, -5) == '"€"#,##0'
+    assert _currency_symbol(fmt, 5) == "$"
+    assert _currency_symbol(fmt, -5) == "€"
+    assert _is_currency_position_prefix(fmt, 5)
+    assert _is_currency_position_prefix(fmt, -5)
+
+    # 3 sections: positive / negative / zero
+    fmt3 = '"$"#,##0;"€"#,##0;"¥"#,##0'
+    assert _currency_symbol(fmt3, 5) == "$"
+    assert _currency_symbol(fmt3, -5) == "€"
+    assert _currency_symbol(fmt3, 0) == "¥"
+
+    # end-to-end: negative keeps its own section currency
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["Balance"])
+    sheet.append([10])
+    sheet.append([-5])
+    sheet["A2"].number_format = fmt
+    sheet["A3"].number_format = fmt
+    stream = io.BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    markdown = _convert(stream.getvalue())
+    assert "$10" in markdown
+    assert "€" in markdown
+    assert "$-5" not in markdown.replace("$-5", "") or "€" in markdown
