@@ -63,7 +63,7 @@ def test_euro_suffix_format() -> None:
     sheet = workbook.active
     sheet.append(["Price"])
     sheet.append([42])
-    sheet["A2"].number_format = '#,##0.00 [$€-x-euro2]'
+    sheet["A2"].number_format = "#,##0.00 [$€-x-euro2]"
     stream = io.BytesIO()
     workbook.save(stream)
     workbook.close()

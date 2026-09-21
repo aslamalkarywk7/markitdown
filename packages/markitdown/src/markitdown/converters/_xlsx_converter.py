@@ -40,8 +40,8 @@ ACCEPTED_XLS_FILE_EXTENSIONS = [".xls"]
 # Currency symbols that may appear in Excel number formats, either as quoted
 # literals (e.g. '"$"#,##0.00') or locale blocks (e.g. '[$€-x-euro2]').
 # See https://github.com/microsoft/markitdown/issues/53.
-_CURRENCY_SYMBOL_RE = re.compile(r'[$€£¥₹₽₩₪₺₴₸₫₦¤]')
-_LOCALE_BLOCK_RE = re.compile(r'\[\$([^\]-]+)')
+_CURRENCY_SYMBOL_RE = re.compile(r"[$€£¥₹₽₩₪₺₴₸₫₦¤]")
+_LOCALE_BLOCK_RE = re.compile(r"\[\$([^\]-]+)")
 _QUOTED_LITERAL_RE = re.compile(r'"([^"]*)"')
 
 
@@ -109,75 +109,73 @@ def _is_currency_position_prefix(number_format: str, value: Any = None) -> bool:
     return symbol_match.start() < placeholder_match.start()
 
 
-def _overlay_currency_labels(
-    sheets: dict[str, Any], workbook_stream: BinaryIO
-) -> None:
-  """Rewrite currency-formatted numeric cells with their display label.
+def _overlay_currency_labels(sheets: dict[str, Any], workbook_stream: BinaryIO) -> None:
+    """Rewrite currency-formatted numeric cells with their display label.
 
-  `pandas.read_excel` returns raw values and drops Excel number formats, so
-  currency-formatted cells lose their label (e.g. 1199 instead of $1199).
-  This overlays the label in place so the downstream HTML/markdown table
-  shows what the spreadsheet shows. DataFrames are mutated in place.
-  """
-  import openpyxl  # Local import: already a required dependency (see above).
+    `pandas.read_excel` returns raw values and drops Excel number formats, so
+    currency-formatted cells lose their label (e.g. 1199 instead of $1199).
+    This overlays the label in place so the downstream HTML/markdown table
+    shows what the spreadsheet shows. DataFrames are mutated in place.
+    """
+    import openpyxl  # Local import: already a required dependency (see above).
 
-  position = workbook_stream.tell()
-  try:
-    workbook_stream.seek(0)
-    workbook = openpyxl.load_workbook(
-        workbook_stream, data_only=True, read_only=True
-    )
-  except Exception:
-    return
-  try:
-    for worksheet in workbook.worksheets:
-      frame = sheets.get(worksheet.title)
-      if frame is None:
-        continue
-      object_cols: set[int] = set()
-      # pandas treats the first row as the header, so data row i lives in
-      # openpyxl row i + 2 (both 1-indexed vs 0-indexed and header offset).
-      for openpyxl_row in worksheet.iter_rows(min_row=2):
-        for cell in openpyxl_row:
-          value = cell.value
-          if (
-              value is None
-              or isinstance(value, bool)
-              or not isinstance(value, (int, float))
-          ):
-            continue
-          symbol = _currency_symbol(cell.number_format, value)
-          if symbol is None:
-            continue
-          data_row = cell.row - 2
-          data_col = cell.column - 1
-          if not (0 <= data_row < len(frame)) or not (
-              0 <= data_col < len(frame.columns)
-          ):
-            continue
-          text = str(frame.iat[data_row, data_col])
-          if symbol in text:
-            continue
-          if data_col not in object_cols:
-            # A str label cannot live in a numeric column: widen it once.
-            frame[frame.columns[data_col]] = frame[
-                frame.columns[data_col]
-            ].astype(object)
-            object_cols.add(data_col)
-          if _is_currency_position_prefix(str(cell.number_format), value):
-            text = f'{symbol}{text}'
-          else:
-            text = f'{text}{symbol}'
-          frame.iat[data_row, data_col] = text
-  finally:
+    position = workbook_stream.tell()
     try:
-      workbook.close()
+        workbook_stream.seek(0)
+        workbook = openpyxl.load_workbook(
+            workbook_stream, data_only=True, read_only=True
+        )
     except Exception:
-      pass
+        return
     try:
-      workbook_stream.seek(position)
-    except Exception:
-      pass
+        for worksheet in workbook.worksheets:
+            frame = sheets.get(worksheet.title)
+            if frame is None:
+                continue
+            object_cols: set[int] = set()
+            # pandas treats the first row as the header, so data row i lives in
+            # openpyxl row i + 2 (both 1-indexed vs 0-indexed and header offset).
+            for openpyxl_row in worksheet.iter_rows(min_row=2):
+                for cell in openpyxl_row:
+                    value = cell.value
+                    if (
+                        value is None
+                        or isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                    ):
+                        continue
+                    symbol = _currency_symbol(cell.number_format, value)
+                    if symbol is None:
+                        continue
+                    data_row = cell.row - 2
+                    data_col = cell.column - 1
+                    if not (0 <= data_row < len(frame)) or not (
+                        0 <= data_col < len(frame.columns)
+                    ):
+                        continue
+                    text = str(frame.iat[data_row, data_col])
+                    if symbol in text:
+                        continue
+                    if data_col not in object_cols:
+                        # A str label cannot live in a numeric column: widen it once.
+                        frame[frame.columns[data_col]] = frame[
+                            frame.columns[data_col]
+                        ].astype(object)
+                        object_cols.add(data_col)
+                    if _is_currency_position_prefix(str(cell.number_format), value):
+                        text = f"{symbol}{text}"
+                    else:
+                        text = f"{text}{symbol}"
+                    frame.iat[data_row, data_col] = text
+    finally:
+        try:
+            workbook.close()
+        except Exception:
+            pass
+        try:
+            workbook_stream.seek(position)
+        except Exception:
+            pass
 
 
 # Some producers write the legacy attribute "showZeroes" on <sheetView>, where the
