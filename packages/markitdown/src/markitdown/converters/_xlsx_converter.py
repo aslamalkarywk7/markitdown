@@ -1,6 +1,7 @@
 import io
 import re
 import sys
+import unicodedata
 import zipfile
 from contextlib import contextmanager
 from typing import BinaryIO, Any, Iterator, Optional
@@ -40,9 +41,49 @@ ACCEPTED_XLS_FILE_EXTENSIONS = [".xls"]
 # Currency symbols that may appear in Excel number formats, either as quoted
 # literals (e.g. '"$"#,##0.00') or locale blocks (e.g. '[$€-x-euro2]').
 # See https://github.com/microsoft/markitdown/issues/53.
-_CURRENCY_SYMBOL_RE = re.compile(r"[$€£¥₹₽₩₪₺₴₸₫₦¤]")
 _LOCALE_BLOCK_RE = re.compile(r"\[\$([^\]-]+)")
 _QUOTED_LITERAL_RE = re.compile(r'"([^"]*)"')
+
+
+def _find_currency_symbol(text: str) -> tuple[Optional[str], int]:
+    """Return the first Unicode currency symbol (category Sc) and its index.
+
+    Detecting category Sc covers every currency sign (e.g. $, €, ฿, ₱)
+    instead of maintaining a partial hard-coded list.
+    """
+    for index, char in enumerate(text):
+        if unicodedata.category(char) == "Sc":
+            return char, index
+    return None, -1
+
+
+def _split_format_sections(number_format: str) -> list[str]:
+    """Split an Excel number format on `;` separators.
+
+    Separators inside quoted literals ("...") or escaped with a backslash
+    are part of the section text, not separators.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    escaped = False
+    for char in number_format:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            current.append(char)
+            escaped = True
+        elif char == '"':
+            in_quotes = not in_quotes
+            current.append(char)
+        elif char == ";" and not in_quotes:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    return parts
 
 
 def _select_format_section(number_format: str, value: Any) -> str:
@@ -51,7 +92,7 @@ def _select_format_section(number_format: str, value: Any) -> str:
     Excel uses: 1 section = all numbers, 2 sections = positive+zero / negative,
     3 sections = positive / negative / zero (4th section is text and ignored).
     """
-    parts = number_format.split(";")
+    parts = _split_format_sections(number_format)
     if len(parts) == 1:
         return parts[0]
     if len(parts) == 2:
@@ -84,15 +125,15 @@ def _currency_symbol(number_format: Any, value: Any = None) -> Optional[str]:
     section = (
         _select_format_section(number_format, value)
         if value is not None
-        else number_format.split(";")[0]
+        else _split_format_sections(number_format)[0]
     )
     quoted = "".join(_QUOTED_LITERAL_RE.findall(section))
     locale = "".join(_LOCALE_BLOCK_RE.findall(section))
     candidates = quoted + locale
     if not candidates:
         candidates = section
-    match = _CURRENCY_SYMBOL_RE.search(candidates)
-    return match.group(0) if match else None
+    symbol, _ = _find_currency_symbol(candidates)
+    return symbol
 
 
 def _is_currency_position_prefix(number_format: str, value: Any = None) -> bool:
@@ -100,13 +141,13 @@ def _is_currency_position_prefix(number_format: str, value: Any = None) -> bool:
     section = (
         _select_format_section(number_format, value)
         if value is not None
-        else number_format.split(";")[0]
+        else _split_format_sections(number_format)[0]
     )
-    symbol_match = _CURRENCY_SYMBOL_RE.search(section)
+    symbol, position = _find_currency_symbol(section)
     placeholder_match = re.search(r"[#0?]", section)
-    if not symbol_match or not placeholder_match:
+    if symbol is None or not placeholder_match:
         return True
-    return symbol_match.start() < placeholder_match.start()
+    return position < placeholder_match.start()
 
 
 def _overlay_currency_labels(sheets: dict[str, Any], workbook_stream: BinaryIO) -> None:
