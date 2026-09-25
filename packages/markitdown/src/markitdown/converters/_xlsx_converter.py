@@ -38,11 +38,21 @@ ACCEPTED_XLS_MIME_TYPE_PREFIXES = [
 ACCEPTED_XLS_FILE_EXTENSIONS = [".xls"]
 
 
-# Currency symbols that may appear in Excel number formats, either as quoted
-# literals (e.g. '"$"#,##0.00') or locale blocks (e.g. '[$€-x-euro2]').
-# See https://github.com/microsoft/markitdown/issues/53.
-_LOCALE_BLOCK_RE = re.compile(r"\[\$([^\]-]+)")
-_QUOTED_LITERAL_RE = re.compile(r'"([^"]*)"')
+# Bracketed number-format syntax that never renders as cell text, e.g. locale
+# blocks ([$-409]), color tags ([Red], [Color10]) and explicit conditions
+# ([>=100]). See https://github.com/microsoft/markitdown/issues/53.
+_SQUARE_BLOCK_RE = re.compile(r"\[[^\]]*\]")
+# Quoted literals (e.g. '"$"#,##0.00'), honoring backslash escapes.
+_QUOTED_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+# Locale blocks that display a literal currency token (e.g. [$€-x-euro2]
+# shows €, [$USD-409] shows USD). A payload starting with "-" ([$-409]) is
+# locale metadata only, and "[$$-...]" names the system symbol, which cannot
+# be determined statically, so neither contributes a token.
+_LOCALE_CURRENCY_RE = re.compile(r"\[\$([^\]]*)\]")
+# Leading explicit condition of a format section (e.g. [>=100]"$"0).
+_CONDITION_RE = re.compile(r"^\s*\[(>=|<=|<>|>|<|=)\s*([^\]]+?)\s*\]")
+# ISO 4217 currency codes are exactly three uppercase ASCII letters.
+_CURRENCY_CODE_RE = re.compile(r"^[A-Z]{3}$")
 
 
 def _find_currency_symbol(text: str) -> tuple[Optional[str], int]:
@@ -86,39 +96,126 @@ def _split_format_sections(number_format: str) -> list[str]:
     return parts
 
 
+def _strip_square_blocks(section: str) -> str:
+    """Remove bracketed metadata (locale/color/condition blocks)."""
+    return _SQUARE_BLOCK_RE.sub("", section)
+
+
+def _display_text(section: str) -> str:
+    """Section with metadata removed but displayed tokens preserved.
+
+    Locale blocks carrying a literal token ([$USD-409] shows USD) are
+    replaced by that token; locale-only blocks ([$-409]), system-symbol
+    blocks ([$$-...]) and color/condition blocks are removed.
+    """
+    return _SQUARE_BLOCK_RE.sub(
+        "", _LOCALE_CURRENCY_RE.sub(_locale_block_replacement, section)
+    )
+
+
+def _locale_block_replacement(match: re.Match[str]) -> str:
+    payload = match.group(1)
+    if payload.startswith("-") or payload.startswith("$"):
+        return ""
+    return payload.split("-", 1)[0].strip()
+
+
+def _unescape_literal(text: str) -> str:
+    """Collapse backslash escapes inside a quoted literal."""
+    return re.sub(r"\\(.)", r"\1", text)
+
+
 def _select_format_section(number_format: str, value: Any) -> str:
     """Pick the `;`-separated Excel section that applies to `value`.
 
-    Excel uses: 1 section = all numbers, 2 sections = positive+zero / negative,
-    3 sections = positive / negative / zero (4th section is text and ignored).
+    Without explicit conditions Excel uses: 1 section = all numbers,
+    2 sections = positive+zero / negative, 3 sections = positive / negative
+    / zero (a 4th text section is ignored). Explicit conditions such as
+    [>=100] override the sign rules: the first matching section wins and an
+    unconditional section acts as the fallback for values reaching it.
     """
     parts = _split_format_sections(number_format)
-    if len(parts) == 1:
+    if value is None or len(parts) == 1:
         return parts[0]
-    if len(parts) == 2:
-        # Zero renders with the first section when only two are present.
-        try:
-            is_negative = float(value) < 0
-        except Exception:
-            is_negative = False
-        return parts[1] if is_negative else parts[0]
     try:
         numeric = float(value)
     except Exception:
         return parts[0]
-    if numeric > 0:
-        return parts[0]
-    if numeric < 0:
-        return parts[1]
-    return parts[2]
+    if not any(_CONDITION_RE.match(part) for part in parts):
+        if len(parts) == 2:
+            # Zero renders with the first section when only two are present.
+            return parts[1] if numeric < 0 else parts[0]
+        if numeric > 0:
+            return parts[0]
+        if numeric < 0:
+            return parts[1]
+        return parts[2]
+    for part in parts:
+        match = _CONDITION_RE.match(part)
+        if match is None:
+            return part
+        if _condition_matches(match.group(1), match.group(2), numeric):
+            return part
+    return parts[0]
+
+
+def _condition_matches(operator: str, target: str, value: float) -> bool:
+    """Evaluate an explicit section condition such as [>=100]."""
+    try:
+        bound = float(target)
+    except ValueError:
+        return False
+    if operator == ">=":
+        return value >= bound
+    if operator == "<=":
+        return value <= bound
+    if operator == "<>":
+        return value != bound
+    if operator == ">":
+        return value > bound
+    if operator == "<":
+        return value < bound
+    return value == bound
+
+
+def _display_currency_tokens(section: str) -> list[str]:
+    """Currency labels a format section actually displays, in order.
+
+    Quoted literals keep their full label ("R$", not "$"); locale blocks
+    contribute their literal payload ([$USD-409] shows USD) while
+    locale-only blocks ([$-409]) and system-symbol blocks ([$$-...])
+    contribute nothing; anything else must be a bare currency symbol.
+    """
+    tokens: list[str] = []
+    for raw in _QUOTED_LITERAL_RE.findall(section):
+        literal = _unescape_literal(raw).strip()
+        if not literal:
+            continue
+        symbol, _ = _find_currency_symbol(literal)
+        if symbol is not None:
+            tokens.append(literal)
+        elif _CURRENCY_CODE_RE.match(literal):
+            tokens.append(literal)
+    for match in _LOCALE_CURRENCY_RE.finditer(section):
+        payload = match.group(1)
+        if payload.startswith("-") or payload.startswith("$"):
+            continue
+        token = payload.split("-", 1)[0].strip()
+        if token:
+            tokens.append(token)
+    display = _QUOTED_LITERAL_RE.sub("", _strip_square_blocks(section))
+    symbol, _ = _find_currency_symbol(display)
+    if symbol is not None:
+        tokens.append(symbol)
+    return tokens
 
 
 def _currency_symbol(number_format: Any, value: Any = None) -> Optional[str]:
-    """Return the currency symbol of an Excel number format, if it has one.
+    """Return the currency label of an Excel number format, if it has one.
 
-    When `value` is given, the `;`-separated section matching its sign is
-    inspected (positive / negative / zero). Otherwise the first section is
-    used, matching how positive values are rendered.
+    When `value` is given, the `;`-separated section matching it (by sign,
+    or by explicit conditions such as [>=100]) is inspected. Otherwise the
+    first section is used, matching how positive values are rendered.
     """
     if not isinstance(number_format, str):
         return None
@@ -127,25 +224,31 @@ def _currency_symbol(number_format: Any, value: Any = None) -> Optional[str]:
         if value is not None
         else _split_format_sections(number_format)[0]
     )
-    quoted = "".join(_QUOTED_LITERAL_RE.findall(section))
-    locale = "".join(_LOCALE_BLOCK_RE.findall(section))
-    candidates = quoted + locale
-    if not candidates:
-        candidates = section
-    symbol, _ = _find_currency_symbol(candidates)
-    return symbol
+    tokens = _display_currency_tokens(section)
+    return tokens[0] if tokens else None
 
 
 def _is_currency_position_prefix(number_format: str, value: Any = None) -> bool:
-    """Decide whether the currency symbol renders before the value."""
+    """Decide whether the currency label renders before the value.
+
+    Placement is computed from the displayed label and numeric placeholders
+    in the metadata-stripped section, so bracketed blocks ([Color10],
+    [$-409], [>=100]) cannot shift either search.
+    """
+    if not isinstance(number_format, str):
+        return True
     section = (
         _select_format_section(number_format, value)
         if value is not None
         else _split_format_sections(number_format)[0]
     )
-    symbol, position = _find_currency_symbol(section)
-    placeholder_match = re.search(r"[#0?]", section)
-    if symbol is None or not placeholder_match:
+    tokens = _display_currency_tokens(section)
+    if not tokens:
+        return True
+    display = _display_text(section)
+    position = display.find(tokens[0])
+    placeholder_match = re.search(r"[#0?]", display)
+    if position == -1 or placeholder_match is None:
         return True
     return position < placeholder_match.start()
 
@@ -163,9 +266,7 @@ def _overlay_currency_labels(sheets: dict[str, Any], workbook_stream: BinaryIO) 
     position = workbook_stream.tell()
     try:
         workbook_stream.seek(0)
-        workbook = openpyxl.load_workbook(
-            workbook_stream, data_only=True, read_only=True
-        )
+        workbook = openpyxl.load_workbook(workbook_stream, data_only=True)
     except Exception:
         return
     try:
@@ -174,10 +275,14 @@ def _overlay_currency_labels(sheets: dict[str, Any], workbook_stream: BinaryIO) 
             if frame is None:
                 continue
             object_cols: set[int] = set()
-            # pandas treats the first row as the header, so data row i lives in
-            # openpyxl row i + 2 (both 1-indexed vs 0-indexed and header offset).
-            for openpyxl_row in worksheet.iter_rows(min_row=2):
-                for cell in openpyxl_row:
+            # Drive iteration from the rows pandas actually read: the
+            # declared worksheet dimension can be stale (hiding trailing
+            # rows from iter_rows()) while pandas still returns them.
+            # pandas treats the first row as the header, so data row i
+            # lives in openpyxl row i + 2.
+            for data_row in range(len(frame)):
+                for data_col in range(len(frame.columns)):
+                    cell = worksheet.cell(row=data_row + 2, column=data_col + 1)
                     value = cell.value
                     if (
                         value is None
@@ -188,8 +293,6 @@ def _overlay_currency_labels(sheets: dict[str, Any], workbook_stream: BinaryIO) 
                     symbol = _currency_symbol(cell.number_format, value)
                     if symbol is None:
                         continue
-                    data_row = cell.row - 2
-                    data_col = cell.column - 1
                     if not (0 <= data_row < len(frame)) or not (
                         0 <= data_col < len(frame.columns)
                     ):
