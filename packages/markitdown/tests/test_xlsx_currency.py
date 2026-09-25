@@ -210,6 +210,24 @@ def test_placement_ignores_bracketed_metadata() -> None:
     assert _is_currency_position_prefix("#,##0.00 [$€-x-euro2]", 42) is False
 
 
+def test_literal_digits_do_not_become_numeric_placeholders() -> None:
+    from markitdown.converters._xlsx_converter import _is_currency_position_prefix
+
+    assert _is_currency_position_prefix('"0 $"0', 5)
+    assert _is_currency_position_prefix(r'\0"$"0', 5)
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["Price"])
+    sheet.append([5])
+    sheet["A2"].number_format = '"0 $"0'
+    stream = io.BytesIO()
+    workbook.save(stream)
+    workbook.close()
+
+    assert "0 $5" in _convert(stream.getvalue())
+
+
 def test_stale_dimension_still_labels_trailing_rows() -> None:
     workbook = openpyxl.Workbook()
     sheet = workbook.active
