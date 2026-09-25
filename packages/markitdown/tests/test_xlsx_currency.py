@@ -8,7 +8,6 @@ import pytest
 from markitdown import StreamInfo
 from markitdown.converters import XlsxConverter
 
-
 _INFO = StreamInfo(extension=".xlsx")
 
 
@@ -105,4 +104,22 @@ def test_section_specific_currency_uses_cell_value() -> None:
     markdown = _convert(stream.getvalue())
     assert "$10" in markdown
     assert "€" in markdown
-    assert "$-5" not in markdown.replace("$-5", "") or "€" in markdown
+    assert "$-5" not in markdown
+
+
+def test_thai_baht_format() -> None:
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["Price"])
+    sheet.append([42])
+    sheet["A2"].number_format = '"฿"#,##0'
+    stream = io.BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    assert "฿42" in _convert(stream.getvalue())
+
+
+def test_quoted_semicolon_is_not_a_section_separator() -> None:
+    from markitdown.converters._xlsx_converter import _select_format_section
+
+    assert _select_format_section('"$;gross"#,##0', -5) == '"$;gross"#,##0'
