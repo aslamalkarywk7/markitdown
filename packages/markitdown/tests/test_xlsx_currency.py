@@ -210,6 +210,50 @@ def test_placement_ignores_bracketed_metadata() -> None:
     assert _is_currency_position_prefix("#,##0.00 [$€-x-euro2]", 42) is False
 
 
+def test_quoted_literal_digit_is_not_placeholder() -> None:
+    from markitdown.converters._xlsx_converter import (
+        _currency_symbol,
+        _is_currency_position_prefix,
+    )
+
+    fmt = '"0 $"0'
+    assert _currency_symbol(fmt, 5) == "0 $"
+    assert _is_currency_position_prefix(fmt, 5) is True
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["Price"])
+    sheet.append([5])
+    sheet["A2"].number_format = fmt
+    stream = io.BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    markdown = _convert(stream.getvalue())
+    assert "0 $5" in markdown
+    assert "50 $" not in markdown
+
+
+def test_escaped_literal_digit_is_not_placeholder() -> None:
+    from markitdown.converters._xlsx_converter import (
+        _is_currency_position_prefix,
+    )
+
+    fmt = r'\0"$"0'
+    assert _is_currency_position_prefix(fmt, 5) is True
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["Price"])
+    sheet.append([5])
+    sheet["A2"].number_format = fmt
+    stream = io.BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    markdown = _convert(stream.getvalue())
+    assert "$5" in markdown
+    assert "5$" not in markdown
+
+
 def test_stale_dimension_still_labels_trailing_rows() -> None:
     workbook = openpyxl.Workbook()
     sheet = workbook.active
