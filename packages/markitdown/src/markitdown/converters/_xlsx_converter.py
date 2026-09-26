@@ -232,8 +232,8 @@ def _is_currency_position_prefix(number_format: str, value: Any = None) -> bool:
     """Decide whether the currency label renders before the value.
 
     Placement is computed from the displayed label and numeric placeholders
-    in the metadata-stripped section, so bracketed blocks ([Color10],
-    [$-409], [>=100]) cannot shift either search.
+    in the metadata-stripped section. Quoted and escaped literal digits are
+    excluded from the numeric placeholder search.
     """
     if not isinstance(number_format, str):
         return True
@@ -247,7 +247,11 @@ def _is_currency_position_prefix(number_format: str, value: Any = None) -> bool:
         return True
     display = _display_text(section)
     position = display.find(tokens[0])
-    placeholder_match = re.search(r"[#0?]", display)
+    placeholders = _QUOTED_LITERAL_RE.sub(
+        lambda match: " " * len(match.group(0)), display
+    )
+    placeholders = re.sub(r"\\.", lambda match: " " * len(match.group(0)), placeholders)
+    placeholder_match = re.search(r"[#0?]", placeholders)
     if position == -1 or placeholder_match is None:
         return True
     return position < placeholder_match.start()
